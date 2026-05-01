@@ -66,6 +66,7 @@ impl<'a> ServerHello<'a> {
     pub fn calculate_shared_secret(&self, secret: &EphemeralSecret) -> Option<SharedSecret> {
         let server_key_share = self.key_share()?;
         let server_public_key = PublicKey::from_sec1_bytes(server_key_share.opaque).ok()?;
+        // FIXME: decapsulate if mlkem??
         Some(secret.diffie_hellman(&server_public_key))
     }
 

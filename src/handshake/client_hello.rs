@@ -1,10 +1,14 @@
 use core::marker::PhantomData;
 
+#[cfg(feature = "mlkem")]
+use dhkem::Generate;
 use digest::{Digest, OutputSizeUser};
 use heapless::Vec;
-use p256::EncodedPoint;
-use p256::ecdh::EphemeralSecret;
-use p256::elliptic_curve::rand_core::RngCore;
+#[cfg(feature = "mlkem")]
+use ml_kem::{DecapsulationKey, EncapsulationKey, MlKem768, kem::Kem};
+use p256::elliptic_curve::Generate;
+use p256::{NistP256, ecdh::EphemeralSecret, elliptic_curve::sec1::Sec1Point};
+use rand_core::Rng;
 use typenum::Unsigned;
 
 use crate::TlsError;
@@ -32,6 +36,8 @@ where
     random: Random,
     cipher_suite: PhantomData<CipherSuite>,
     pub(crate) secret: EphemeralSecret,
+    #[cfg(feature = "mlkem")]
+    pub(crate) _kem_pair: (DecapsulationKey<MlKem768>, EncapsulationKey<MlKem768>),
 }
 
 impl<'config, CipherSuite> ClientHello<'config, CipherSuite>
@@ -44,18 +50,23 @@ where
     {
         let mut random = [0; 32];
         provider.rng().fill_bytes(&mut random);
+        let mut rng = provider.rng();
 
         Self {
             config,
             random,
             cipher_suite: PhantomData,
-            secret: EphemeralSecret::random(&mut provider.rng()),
+            secret: EphemeralSecret::generate_from_rng(&mut rng),
+            #[cfg(feature = "mlkem")]
+            _kem_pair: MlKem768::generate_keypair_from_rng(&mut rng),
         }
     }
 
     pub(crate) fn encode(&self, buf: &mut CryptoBuffer<'_>) -> Result<(), TlsError> {
-        let public_key = EncodedPoint::from(&self.secret.public_key());
+        let public_key = Sec1Point::<NistP256>::from(&self.secret.public_key());
         let public_key = public_key.as_ref();
+        #[cfg(feature = "mlkem")]
+        let ek = &self._kem_pair.1;
 
         buf.push_u16(LEGACY_VERSION)
             .map_err(|_| TlsError::EncodeError)?;
@@ -112,6 +123,16 @@ where
                 client_shares: Vec::from_slice(&[KeyShareEntry {
                     group: NamedGroup::Secp256r1,
                     opaque: public_key,
+                }])
+                .unwrap(),
+            })
+            .encode(buf)?;
+
+            #[cfg(feature = "mlkem")]
+            ClientHelloExtension::KeyShare(KeyShareClientHello {
+                client_shares: Vec::from_slice(&[KeyShareEntry {
+                    group: NamedGroup::SecP256r1MLKEM768,
+                    opaque: public_key + ek, // FIXME: concat (ek + public_key + ek)
                 }])
                 .unwrap(),
             })

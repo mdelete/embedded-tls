@@ -19,7 +19,7 @@ use crate::application_data::ApplicationData;
 use crate::buffer::CryptoBuffer;
 use digest::generic_array::typenum::Unsigned;
 use p256::ecdh::EphemeralSecret;
-use signature::SignerMut;
+use signature::Signer;
 
 use crate::content_types::ContentType;
 use crate::parse_buffer::ParseBuffer;
@@ -546,7 +546,7 @@ where
     Provider: CryptoProvider,
 {
     let (result, record) = match crypto_provider.signer() {
-        Ok((mut signing_key, signature_scheme)) => {
+        Ok((signing_key, signature_scheme)) => {
             let ctx_str = b"TLS 1.3, client CertificateVerify\x00";
 
             // 64 (pad) + 34 (ctx) + 48 (SHA-384) = 146 bytes required
