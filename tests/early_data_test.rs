@@ -1,4 +1,4 @@
-#![macro_use]
+//#![macro_use]
 use embedded_io::{Read, Write};
 use embedded_io_adapters::std::FromStd;
 use rand::rngs::SysRng;
@@ -26,18 +26,12 @@ fn setup() -> SocketAddr {
         std::thread::spawn(move || {
             use tlsserver::*;
 
-            let versions = &[&rustls::version::TLS13];
-
             let test_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
 
             let certs = load_certs(&test_dir.join("data").join("server-cert.pem"));
             let privkey = load_private_key(&test_dir.join("data").join("server-key.pem"));
 
             let mut config = rustls::ServerConfig::builder()
-                .with_cipher_suites(rustls::ALL_CIPHER_SUITES)
-                .with_kx_groups(&rustls::ALL_KX_GROUPS)
-                .with_protocol_versions(versions)
-                .unwrap()
                 .with_no_client_auth()
                 .with_single_cert(certs, privkey)
                 .unwrap();

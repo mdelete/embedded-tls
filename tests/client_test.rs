@@ -1,4 +1,4 @@
-#![macro_use]
+//#![macro_use]
 use embedded_io::BufRead as _;
 use embedded_io_adapters::{std::FromStd, tokio_1::FromTokio};
 use embedded_io_async::BufRead as _;
@@ -56,8 +56,8 @@ async fn test_google() {
         .expect("error connecting to server");
 
     log::info!("Connected");
-    let mut read_record_buffer = [0; 16384];
-    let mut write_record_buffer = [0; 16384];
+    let mut read_record_buffer = [0; 16640];
+    let mut write_record_buffer = [0; 16640];
     let config = TlsConfig::new().with_server_name("google.com");
 
     let mut tls = TlsConnection::new(
@@ -79,7 +79,7 @@ async fn test_google() {
         .expect("error writing data");
     tls.flush().await.expect("error flushing data");
 
-    let mut rx_buf = [0; 4096];
+    let mut rx_buf = [0; 16640];
     let sz = tls.read(&mut rx_buf).await.expect("error reading data");
     log::info!("Read {} bytes: {:?}", sz, &rx_buf[..sz]);
 
@@ -101,8 +101,8 @@ async fn test_ping() {
         .expect("error connecting to server");
 
     log::info!("Connected");
-    let mut read_record_buffer = [0; 16384];
-    let mut write_record_buffer = [0; 16384];
+    let mut read_record_buffer = [0; 16640];
+    let mut write_record_buffer = [0; 16640];
     let config = TlsConfig::new().with_server_name("localhost");
 
     let mut tls = TlsConnection::new(

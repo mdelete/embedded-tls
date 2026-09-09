@@ -1,11 +1,8 @@
 use core::marker::PhantomData;
-
-#[cfg(feature = "mlkem")]
-use dhkem::Generate;
 use digest::{Digest, OutputSizeUser};
 use heapless::Vec;
 #[cfg(feature = "mlkem")]
-use ml_kem::{DecapsulationKey, EncapsulationKey, MlKem768, kem::Kem};
+use ml_kem::{DecapsulationKey, KeyExport, MlKem768, kem::Kem};
 use p256::elliptic_curve::Generate;
 use p256::{NistP256, ecdh::EphemeralSecret, elliptic_curve::sec1::Sec1Point};
 use rand_core::Rng;
@@ -37,7 +34,7 @@ where
     cipher_suite: PhantomData<CipherSuite>,
     pub(crate) secret: EphemeralSecret,
     #[cfg(feature = "mlkem")]
-    pub(crate) _kem_pair: (DecapsulationKey<MlKem768>, EncapsulationKey<MlKem768>),
+    pub(crate) kem: DecapsulationKey<MlKem768>,
 }
 
 impl<'config, CipherSuite> ClientHello<'config, CipherSuite>
@@ -58,15 +55,21 @@ where
             cipher_suite: PhantomData,
             secret: EphemeralSecret::generate_from_rng(&mut rng),
             #[cfg(feature = "mlkem")]
-            _kem_pair: MlKem768::generate_keypair_from_rng(&mut rng),
+            kem: MlKem768::generate_keypair_from_rng(&mut rng).0,
         }
     }
 
     pub(crate) fn encode(&self, buf: &mut CryptoBuffer<'_>) -> Result<(), TlsError> {
         let public_key = Sec1Point::<NistP256>::from(&self.secret.public_key());
         let public_key = public_key.as_ref();
+
+        // concat(pubkey + ek) for secp256MlKem768 (65+1184 = 1249 bytes), concat(ek + pubkey) for x25519MlKem768 (32+1184 = 1216 bytes)
         #[cfg(feature = "mlkem")]
-        let ek = &self._kem_pair.1;
+        let mut hybrid: Vec<u8, 1249> = Vec::new();
+        #[cfg(feature = "mlkem")]
+        hybrid.extend_from_slice(public_key).unwrap();
+        #[cfg(feature = "mlkem")]
+        hybrid.extend(self.kem.encapsulation_key().to_bytes());
 
         buf.push_u16(LEGACY_VERSION)
             .map_err(|_| TlsError::EncodeError)?;
@@ -120,20 +123,17 @@ where
             .encode(buf)?;
 
             ClientHelloExtension::KeyShare(KeyShareClientHello {
-                client_shares: Vec::from_slice(&[KeyShareEntry {
-                    group: NamedGroup::Secp256r1,
-                    opaque: public_key,
-                }])
-                .unwrap(),
-            })
-            .encode(buf)?;
-
-            #[cfg(feature = "mlkem")]
-            ClientHelloExtension::KeyShare(KeyShareClientHello {
-                client_shares: Vec::from_slice(&[KeyShareEntry {
-                    group: NamedGroup::SecP256r1MLKEM768,
-                    opaque: public_key + ek, // FIXME: concat (ek + public_key + ek)
-                }])
+                client_shares: Vec::from_slice(&[
+                    KeyShareEntry {
+                        group: NamedGroup::Secp256r1,
+                        opaque: public_key,
+                    },
+                    #[cfg(feature = "mlkem")]
+                    KeyShareEntry {
+                        group: NamedGroup::SecP256r1MLKEM768,
+                        opaque: &hybrid,
+                    },
+                ])
                 .unwrap(),
             })
             .encode(buf)?;

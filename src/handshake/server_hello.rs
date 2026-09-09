@@ -3,10 +3,12 @@ use heapless::Vec;
 use crate::cipher_suites::CipherSuite;
 use crate::crypto_engine::CryptoEngine;
 use crate::extensions::extension_data::key_share::KeyShareEntry;
+use crate::extensions::extension_data::supported_groups::NamedGroup;
 use crate::extensions::messages::ServerHelloExtension;
 use crate::parse_buffer::ParseBuffer;
 use crate::{TlsError, unused};
-use p256::PublicKey;
+#[cfg(feature = "mlkem")]
+use ml_kem::{Decapsulate, DecapsulationKey, MlKem768};
 use p256::ecdh::{EphemeralSecret, SharedSecret};
 
 #[derive(Debug)]
@@ -63,11 +65,42 @@ impl<'a> ServerHello<'a> {
         })
     }
 
-    pub fn calculate_shared_secret(&self, secret: &EphemeralSecret) -> Option<SharedSecret> {
+    pub fn calculate_shared_secret(
+        &self,
+        secret: &EphemeralSecret,
+        kem: &DecapsulationKey<MlKem768>,
+    ) -> Option<SharedSecret> {
         let server_key_share = self.key_share()?;
-        let server_public_key = PublicKey::from_sec1_bytes(server_key_share.opaque).ok()?;
-        // FIXME: decapsulate if mlkem??
-        Some(secret.diffie_hellman(&server_public_key))
+        match server_key_share.group {
+            NamedGroup::Secp256r1 => {
+                let server_public_key =
+                    p256::PublicKey::from_sec1_bytes(server_key_share.opaque).ok()?;
+                Some(secret.diffie_hellman(&server_public_key))
+            }
+            #[cfg(feature = "mlkem")]
+            NamedGroup::SecP256r1MLKEM768 => {
+                warn!("HYBRID: {:0x?}", server_key_share.opaque);
+                let server_public_key =
+                    p256::PublicKey::from_sec1_bytes(&server_key_share.opaque[..65]).ok()?;
+                let _pubkey_secret = secret.diffie_hellman(&server_public_key).raw_secret_bytes();
+                let _decap_secret = kem.decapsulate_slice(&server_key_share.opaque[65..]).ok()?;
+                //FIXME: Some(_pubkey_secret CONCAT _decap_secret)
+                None
+            }
+            #[cfg(feature = "x25519")]
+            NamedGroup::X25519 => {
+                let mut server_public_key_bytes = [0u8; 32];
+                server_public_key_bytes.copy_from_slice(server_key_share.opaque);
+                let _server_public_key = x25519_dalek::PublicKey::from(server_public_key_bytes);
+                //x25519_dalek::
+                //FIXME: let _pubkey_secret = secret.diffie_hellman(server_public_key);
+                None
+            }
+            g => {
+                warn!("Unknown group: {:?}", g);
+                None
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -76,7 +109,7 @@ impl<'a> ServerHello<'a> {
 
         let group = server_key_share.group;
 
-        let server_public_key = PublicKey::from_sec1_bytes(server_key_share.opaque).ok()?;
+        let server_public_key = p256::PublicKey::from_sec1_bytes(server_key_share.opaque).ok()?;
         let shared = secret.diffie_hellman(&server_public_key);
 
         Some(CryptoEngine::new(group, shared))

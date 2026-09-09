@@ -6,10 +6,9 @@ use crate::extensions::extension_data::signature_algorithms::SignatureScheme;
 use crate::extensions::extension_data::supported_groups::NamedGroup;
 pub use crate::handshake::certificate::{CertificateEntryRef, CertificateRef};
 pub use crate::handshake::certificate_verify::CertificateVerifyRef;
-use aes_gcm::{AeadInPlace, Aes128Gcm, Aes256Gcm, KeyInit};
-use digest::core_api::BlockSizeUser;
-use digest::{Digest, FixedOutput, OutputSizeUser, Reset};
-use generic_array::ArrayLength;
+use aes_gcm::{AeadInOut, Aes128Gcm, Aes256Gcm, KeyInit};
+use digest::array::ArraySize;
+use digest::{Digest, FixedOutput, OutputSizeUser, Reset, block_api::BlockSizeUser};
 use heapless::Vec;
 use p256::SecretKey;
 use p256::ecdsa::SigningKey;
@@ -32,12 +31,12 @@ type LabelBuffer<CipherSuite> = Sum<
 /// Represents a TLS 1.3 cipher suite
 pub trait TlsCipherSuite {
     const CODE_POINT: u16;
-    type Cipher: KeyInit<KeySize = Self::KeyLen> + AeadInPlace<NonceSize = Self::IvLen>;
-    type KeyLen: ArrayLength<u8>;
-    type IvLen: ArrayLength<u8>;
+    type Cipher: KeyInit<KeySize = Self::KeyLen> + AeadInOut<NonceSize = Self::IvLen>;
+    type KeyLen: ArraySize;
+    type IvLen: ArraySize;
 
     type Hash: Digest + Reset + Clone + OutputSizeUser + BlockSizeUser + FixedOutput;
-    type LabelBufferSize: ArrayLength<u8>;
+    type LabelBufferSize: ArraySize;
 }
 
 pub struct Aes128GcmSha256;
@@ -306,24 +305,27 @@ impl<'a> TlsConfig<'a> {
                 .ok()
         );
 
-        if cfg!(feature = "p384") {
-            unwrap!(
-                config
-                    .signature_schemes
-                    .push(SignatureScheme::EcdsaSecp384r1Sha384)
-                    .ok()
-            );
-        }
+        #[cfg(feature = "p384")]
+        unwrap!(
+            config
+                .signature_schemes
+                .push(SignatureScheme::EcdsaSecp384r1Sha384)
+                .ok()
+        );
 
-        if cfg!(feature = "ed25519") {
-            unwrap!(config.signature_schemes.push(SignatureScheme::Ed25519).ok());
-        }
+        #[cfg(feature = "ed25519")]
+        unwrap!(config.signature_schemes.push(SignatureScheme::Ed25519).ok());
 
         unwrap!(config.named_groups.push(NamedGroup::Secp256r1));
 
-        if cfg!(feature = "mlkem") {
-            unwrap!(config.named_groups.push(NamedGroup::SecP256r1MLKEM768));
-        }
+        #[cfg(feature = "mlkem")]
+        unwrap!(config.named_groups.push(NamedGroup::SecP256r1MLKEM768));
+
+        #[cfg(feature = "x25519")]
+        unwrap!(config.named_groups.push(NamedGroup::X25519));
+
+        #[cfg(all(feature = "x25519", feature = "mlkem"))]
+        unwrap!(config.named_groups.push(NamedGroup::X25519MLKEM768));
 
         config
     }

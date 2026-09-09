@@ -1,4 +1,4 @@
-#![macro_use]
+//#![macro_use]
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_tls::*;
 use openssl::ssl;

@@ -1,18 +1,16 @@
 #![cfg(all(feature = "rustpki", feature = "rsa"))]
-use digest::FixedOutputReset;
 use embedded_io_adapters::tokio_1::FromTokio;
 use embedded_tls::pki::CertVerifier;
 use embedded_tls::{Aes128GcmSha256, CryptoProvider, SignatureScheme, TlsError, TlsVerifier};
 use rand::rngs::SysRng;
-use rand_core::CryptoRng;
 use rand_core::UnwrapErr;
 use rsa::pkcs8::DecodePrivateKey;
-use rustls::server::AllowAnyAnonymousOrAuthenticatedClient;
-use sha2::{Digest, Sha256};
-use signature::SignerMut;
+use rsa::sha2::Sha256;
+use rustls::server::WebPkiClientVerifier;
+use signature::digest::{Digest, FixedOutputReset};
 use signature::{RandomizedSigner, Signer};
 use std::net::SocketAddr;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::SystemTime;
 
 mod tlsserver;
@@ -21,14 +19,13 @@ static LOG_INIT: Once = Once::new();
 static INIT: Once = Once::new();
 static mut ADDR: Option<SocketAddr> = None;
 
-struct RsaPssSigningKey<D: Digest, R: CryptoRng> {
-    rng: R,
+struct RsaPssSigningKey<D: Digest + FixedOutputReset> {
     key: rsa::pss::SigningKey<D>,
 }
 
-impl<D: Digest + FixedOutputReset, R: CryptoRng> SignerMut<Box<[u8]>> for RsaPssSigningKey<D, R> {
-    fn try_sign(&mut self, msg: &[u8]) -> Result<Box<[u8]>, rsa::signature::Error> {
-        let signature = self.key.try_sign_with_rng(&mut self.rng, msg)?;
+impl<D: Digest + FixedOutputReset> Signer<Box<[u8]>> for RsaPssSigningKey<D> {
+    fn try_sign(&self, msg: &[u8]) -> Result<Box<[u8]>, rsa::signature::Error> {
+        let signature = self.key.try_sign_with_rng(&mut rand::rng(), msg)?;
         Ok(signature.into())
     }
 }
@@ -57,7 +54,6 @@ impl CryptoProvider for RustPkiProvider<'_> {
         let private_key =
             rsa::RsaPrivateKey::from_pkcs8_der(key_der).map_err(|_| TlsError::InvalidPrivateKey)?;
         let signer = RsaPssSigningKey {
-            rng: &mut self.rng,
             key: rsa::pss::SigningKey::<Sha256>::new(private_key),
         };
 
@@ -89,8 +85,6 @@ fn setup() -> SocketAddr {
         std::thread::spawn(move || {
             use tlsserver::*;
 
-            let versions = &[&rustls::version::TLS13];
-
             let test_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
 
             let ca = load_certs(&test_dir.join("data").join("rsa-ca-cert.pem"));
@@ -98,19 +92,17 @@ fn setup() -> SocketAddr {
             let privkey = load_private_key(&test_dir.join("data").join("rsa-server-key.pem"));
 
             let mut client_auth_roots = rustls::RootCertStore::empty();
-            for root in ca.iter() {
+            for root in ca.into_iter() {
                 client_auth_roots.add(root).unwrap()
             }
 
-            let client_cert_verifier =
-                AllowAnyAnonymousOrAuthenticatedClient::new(client_auth_roots);
+            let client_cert_verifier = WebPkiClientVerifier::builder(Arc::new(client_auth_roots))
+                .allow_unauthenticated()
+                .build()
+                .unwrap();
 
             let config = rustls::ServerConfig::builder()
-                .with_cipher_suites(rustls::ALL_CIPHER_SUITES)
-                .with_kx_groups(&rustls::ALL_KX_GROUPS)
-                .with_protocol_versions(versions)
-                .unwrap()
-                .with_client_cert_verifier(client_cert_verifier.boxed())
+                .with_client_cert_verifier(client_cert_verifier)
                 .with_single_cert(certs, privkey)
                 .unwrap();
 

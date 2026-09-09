@@ -1,6 +1,10 @@
+use crate::application_data::ApplicationData;
+use crate::buffer::CryptoBuffer;
 use crate::config::{TlsCipherSuite, TlsConfig};
+use crate::content_types::ContentType;
 use crate::handshake::{ClientHandshake, ServerHandshake};
 use crate::key_schedule::{KeySchedule, ReadKeySchedule, WriteKeySchedule};
+use crate::parse_buffer::ParseBuffer;
 use crate::record::{ClientRecord, ServerRecord};
 use crate::record_reader::RecordReader;
 use crate::write_buffer::WriteBuffer;
@@ -9,21 +13,15 @@ use crate::{
     alert::{Alert, AlertDescription, AlertLevel},
     handshake::{certificate::CertificateRef, certificate_request::CertificateRequest},
 };
+use aes_gcm::aead::{AeadCore, AeadInOut, KeyInit};
 use core::fmt::Debug;
-use digest::Digest;
+use digest::{Digest, typenum::Unsigned};
 use embedded_io::Error as _;
 use embedded_io::{Read as BlockingRead, Write as BlockingWrite};
 use embedded_io_async::{Read as AsyncRead, Write as AsyncWrite};
-
-use crate::application_data::ApplicationData;
-use crate::buffer::CryptoBuffer;
-use digest::generic_array::typenum::Unsigned;
+use ml_kem::{DecapsulationKey, MlKem768};
 use p256::ecdh::EphemeralSecret;
 use signature::Signer;
-
-use crate::content_types::ContentType;
-use crate::parse_buffer::ParseBuffer;
-use aes_gcm::aead::{AeadCore, AeadInPlace, KeyInit};
 
 pub(crate) fn decrypt_record<CipherSuite>(
     key_schedule: &mut ReadKeySchedule<CipherSuite>,
@@ -134,6 +132,8 @@ where
 {
     traffic_hash: Option<CipherSuite::Hash>,
     secret: Option<EphemeralSecret>,
+    #[cfg(feature = "mlkem")]
+    kem: Option<DecapsulationKey<MlKem768>>,
     certificate_request: Option<CertificateRequest>,
 }
 
@@ -145,6 +145,8 @@ where
         Handshake {
             traffic_hash: None,
             secret: None,
+            #[cfg(feature = "mlkem")]
+            kem: None,
             certificate_request: None,
         }
     }
@@ -401,6 +403,7 @@ where
 
     if let ClientRecord::Handshake(ClientHandshake::ClientHello(client_hello), _) = client_hello {
         handshake.secret.replace(client_hello.secret);
+        handshake.kem.replace(client_hello.kem);
         Ok((State::ServerHello, slice))
     } else {
         Err(TlsError::EncodeError)
@@ -420,9 +423,11 @@ where
             ServerHandshake::ServerHello(server_hello) => {
                 trace!("********* ServerHello");
                 let secret = handshake.secret.take().ok_or(TlsError::InvalidHandshake)?;
+                let kem = handshake.kem.take().ok_or(TlsError::InvalidHandshake)?;
                 let shared = server_hello
-                    .calculate_shared_secret(&secret)
+                    .calculate_shared_secret(&secret, &kem)
                     .ok_or(TlsError::InvalidKeyShare)?;
+                // FIXME: return &[u8] from shared secret
                 key_schedule.initialize_handshake_secret(shared.raw_secret_bytes())?;
                 Ok(State::ServerVerify)
             }

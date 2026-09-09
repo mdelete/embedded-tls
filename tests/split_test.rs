@@ -1,4 +1,4 @@
-#![macro_use]
+//#![macro_use]
 use embedded_io::{Read, Write};
 use embedded_io_adapters::std::FromStd;
 use rand::rngs::SysRng;
