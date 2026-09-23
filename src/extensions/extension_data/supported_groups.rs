@@ -30,26 +30,31 @@ pub enum NamedGroup {
 }
 
 impl NamedGroup {
-    pub fn parse(buf: &mut ParseBuffer) -> Result<Self, ParseError> {
-        match buf.read_u16()? {
-            0x0017 => Ok(Self::Secp256r1),
-            0x0018 => Ok(Self::Secp384r1),
-            0x0019 => Ok(Self::Secp521r1),
-            0x001D => Ok(Self::X25519),
-            0x001E => Ok(Self::X448),
+    /// Try to convert a raw u16 to a known NamedGroup.
+    pub fn of(raw: u16) -> Option<Self> {
+        match raw {
+            0x0017 => Some(Self::Secp256r1),
+            0x0018 => Some(Self::Secp384r1),
+            0x0019 => Some(Self::Secp521r1),
+            0x001D => Some(Self::X25519),
+            0x001E => Some(Self::X448),
 
-            0x0100 => Ok(Self::Ffdhe2048),
-            0x0101 => Ok(Self::Ffdhe3072),
-            0x0102 => Ok(Self::Ffdhe4096),
-            0x0103 => Ok(Self::Ffdhe6144),
-            0x0104 => Ok(Self::Ffdhe8192),
+            0x0100 => Some(Self::Ffdhe2048),
+            0x0101 => Some(Self::Ffdhe3072),
+            0x0102 => Some(Self::Ffdhe4096),
+            0x0103 => Some(Self::Ffdhe6144),
+            0x0104 => Some(Self::Ffdhe8192),
 
-            0x11EB => Ok(Self::SecP256r1MLKEM768),
-            0x11EC => Ok(Self::X25519MLKEM768),
-            0x11ED => Ok(Self::SecP384r1MLKEM1024),
+            0x11EB => Some(Self::SecP256r1MLKEM768),
+            0x11EC => Some(Self::X25519MLKEM768),
+            0x11ED => Some(Self::SecP384r1MLKEM1024),
 
-            _ => Err(ParseError::InvalidData),
+            _ => None,
         }
+    }
+
+    pub fn parse(buf: &mut ParseBuffer) -> Result<Self, ParseError> {
+        Self::of(buf.read_u16()?).ok_or(ParseError::InvalidData)
     }
 
     pub fn as_u16(self) -> u16 {
@@ -87,10 +92,19 @@ pub struct SupportedGroups<const N: usize> {
 impl<const N: usize> SupportedGroups<N> {
     pub fn parse(buf: &mut ParseBuffer) -> Result<Self, ParseError> {
         let data_length = buf.read_u16()? as usize;
-
-        Ok(Self {
-            supported_groups: buf.read_list::<_, N>(data_length, NamedGroup::parse)?,
-        })
+        let mut data = buf.slice(data_length)?;
+        let mut supported_groups = Vec::new();
+        // Skip unknown named groups per RFC 8446 Section 9.3
+        while !data.is_empty() {
+            match NamedGroup::parse(&mut data) {
+                Ok(group) => {
+                    let _ = supported_groups.push(group);
+                }
+                Err(ParseError::InvalidData) => {} // unknown group, skip
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Self { supported_groups })
     }
 
     pub fn encode(&self, buf: &mut CryptoBuffer) -> Result<(), TlsError> {
@@ -100,5 +114,37 @@ impl<const N: usize> SupportedGroups<N> {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 8446 section 9.3: a peer must ignore named groups it does not
+    /// recognise rather than aborting, so a client offering a newer group
+    /// alongside a known one still negotiates.
+    #[test]
+    fn then_unknown_groups_are_skipped_and_known_ones_kept() {
+        // list length, then: unknown (0xFAFA), X25519 (0x001D), unknown (0xABCD).
+        let bytes = [0x00, 0x06, 0xFA, 0xFA, 0x00, 0x1D, 0xAB, 0xCD];
+        let mut buf = ParseBuffer::new(&bytes);
+
+        let groups = SupportedGroups::<8>::parse(&mut buf).expect("unknown groups are skipped");
+
+        const EXPECTED_RETAINED: usize = 1;
+        assert_eq!(groups.supported_groups.len(), EXPECTED_RETAINED);
+        assert_eq!(groups.supported_groups[0], NamedGroup::X25519);
+    }
+
+    #[test]
+    fn then_a_list_of_only_unknown_groups_parses_as_empty() {
+        let bytes = [0x00, 0x04, 0xFA, 0xFA, 0xAB, 0xCD];
+        let mut buf = ParseBuffer::new(&bytes);
+
+        let groups = SupportedGroups::<8>::parse(&mut buf).expect("parses");
+
+        const EXPECTED_RETAINED: usize = 0;
+        assert_eq!(groups.supported_groups.len(), EXPECTED_RETAINED);
     }
 }

@@ -177,8 +177,15 @@ where
             }
 
             if let Some(alpn_protocols) = self.config.alpn_protocols {
+                let mut protos = Vec::new();
+                for p in alpn_protocols {
+                    // Surfacing the overflow matters: silently dropping the
+                    // extras would negotiate against a list the caller never
+                    // asked for.
+                    protos.push(*p).map_err(|_| TlsError::OutOfMemory)?;
+                }
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(AlpnProtocolNameList {
-                    protocols: alpn_protocols,
+                    protocols: protos,
                 })
                 .encode(buf)?;
             }

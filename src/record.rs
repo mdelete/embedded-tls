@@ -46,7 +46,7 @@ impl ClientRecordHeader {
     pub fn header_content_type(self) -> ContentType {
         match self {
             Self::Handshake(false) => ContentType::Handshake,
-            Self::Alert(false) => ContentType::ChangeCipherSpec,
+            Self::Alert(false) => ContentType::Alert,
             Self::Handshake(true) | Self::Alert(true) | Self::ApplicationData => {
                 ContentType::ApplicationData
             }
@@ -215,4 +215,29 @@ impl<'a, CipherSuite: TlsCipherSuite> ServerRecord<'a, CipherSuite> {
     }
 
     //pub fn parse<D: Digest>(buf: &[u8]) -> Result<Self, TlsError> {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An alert raised before handshake keys exist is sent in the clear, and
+    /// must carry the `Alert` content type. Sending it as `ChangeCipherSpec`
+    /// means the peer never sees it as an alert, and reports a protocol error
+    /// instead of the reason the handshake actually failed.
+    #[test]
+    fn then_an_unencrypted_alert_has_the_alert_content_type() {
+        let content_type = ClientRecordHeader::Alert(false).header_content_type() as u8;
+
+        const EXPECTED_ALERT: u8 = ContentType::Alert as u8;
+        assert_eq!(content_type, EXPECTED_ALERT);
+    }
+
+    #[test]
+    fn then_an_encrypted_alert_is_disguised_as_application_data() {
+        let content_type = ClientRecordHeader::Alert(true).header_content_type() as u8;
+
+        const EXPECTED_APPLICATION_DATA: u8 = ContentType::ApplicationData as u8;
+        assert_eq!(content_type, EXPECTED_APPLICATION_DATA);
+    }
 }
